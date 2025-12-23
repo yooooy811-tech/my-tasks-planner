@@ -51,8 +51,29 @@ def main(page: ft.Page):
 
         # Отображаем дедлайн, если он есть
         deadline_str = "Без срока"
+        is_overdue = False 
+        warning_icon=None
+        # deadline_widget = None
+        # card_bg = None
+        deadline_color = ft.Colors.GREY_400
         if goal_data.get("deadline"):
             deadline_str = goal_data["deadline"].strftime("%d.%m.%Y %H:%M")
+            if goal_data["deadline"]<datetime.now() and goal_data["completed"]==False:
+                is_overdue = True
+                deadline_color=ft.Colors.RED_400
+                deadline_str="Просрочено! " + deadline_str
+                
+        if is_overdue:
+            warning_icon = ft.Icon(
+                ft.Icons.WARNING_AMBER, 
+                size=14, 
+                color=ft.Colors.RED_400)
+            card_bg=ft.Colors.with_opacity(0.15, ft.Colors.RED_600)
+            deadline_widget=ft.Row([warning_icon, ft.Text(deadline_str, color=deadline_color)])
+        else:
+            card_bg=ft.Colors.with_opacity(0.15, ft.Colors.BLUE_GREY_800)
+            deadline_widget = ft.Text(deadline_str, color=deadline_color)
+        
 
         return ft.Container(
             content=ft.Row(
@@ -61,7 +82,8 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Text(goal_data["name"], size=16),
-                            ft.Text(deadline_str, size=12, color=ft.Colors.GREY_400),
+                            deadline_widget
+
                         ],
                         spacing=2,
                         expand=True,
@@ -72,7 +94,7 @@ def main(page: ft.Page):
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             padding=12,
-            bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.BLUE_GREY_800),
+            bgcolor=card_bg,
             border_radius=12,
             border=ft.border.all(1, ft.Colors.BLUE_GREY_700),
         )
