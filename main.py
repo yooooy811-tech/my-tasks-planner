@@ -1,4 +1,5 @@
 import flet as ft
+from datetime import date, datetime, timedelta
 
 def main(page: ft.Page):
     page.title = "Мой Планировщик Целей"
@@ -82,12 +83,24 @@ def main(page: ft.Page):
         on_submit=lambda e: add_new_goal(e),
     )
 
+    selected_deadline = None #здесь позже будет дата
+
+    deadline_input = ft.TextField(
+        hint_text="Дедлайн (гггг-мм-дд)",
+        value="Не установлен",
+        read_only=True,
+        expand=True,
+        border_radius=12,
+        height=48,
+    )
+
+
     def add_new_goal(e):
         text = new_goal_input.value.strip()
         if not text:
             return
 
-        new_goal = {"name": text, "completed": False}
+        new_goal = {"name": text, "completed": False, "deadline": selected_deadline}
         goals.append(new_goal)
 
         index = len(goals) - 1
@@ -98,6 +111,27 @@ def main(page: ft.Page):
         update_progress()
         page.update()
         new_goal_input.focus()
+
+    #ыункция открытия календаря
+    def pick_deadline(e):
+        def on_date_change(e):
+            nonlocal selected_deadline
+            if e.control.value:
+                selected_date=e.control.value
+                selected_deadline=selected_date
+                deadline_input.value=selected_date.strftime("%Y-%m-%d")
+                page.update()
+            page.close()
+        date_picker = ft.DatePicker(
+            first_date=datetime.now().date(),
+            last_date=datetime.now().date() + timedelta(days=365),
+            on_change=on_date_change,
+            confirm_text="OK",
+            cancel_text="Отмена",
+        )
+        page.overlay.append(date_picker)
+        page.update()
+        page.open(ft.AlertDialog(content=date_picker, actions_alignment=ft.MainAxisAlignment.END,))
 
     # Кнопка добавления
     add_btn = ft.ElevatedButton(
@@ -111,10 +145,28 @@ def main(page: ft.Page):
         ),
     )
 
-    input_area = ft.Row(
-        [new_goal_input, add_btn],
-        spacing=12,
+    #кнопка календаря
+    calendar_btn=ft.IconButton(
+        icon=ft.Icons.CALENDAR_MONTH,
+        icon_color=ft.Colors.BLUE_400,
+        tooltip="Выбрать дату",
+        on_click=pick_deadline,
+    )
+
+    #объединили в столбик
+    deadline_row=ft.Row(
+        [deadline_input, calendar_btn],
+        spacing=8,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    #наш главный (общий) столбик
+    input_area = ft.Column(
+        [
+            ft.Row([new_goal_input, add_btn],
+        spacing=12),
+        deadline_row,
+        ],
+        spacing=12,
     )
 
     # Вот здесь основной фон приложения
