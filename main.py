@@ -1,5 +1,5 @@
 import flet as ft
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 def main(page: ft.Page):
     page.title = "Мой Планировщик Целей"
@@ -49,11 +49,23 @@ def main(page: ft.Page):
             on_click=delete_goal,
         )
 
+        # Отображаем дедлайн, если он есть
+        deadline_str = "Без срока"
+        if goal_data.get("deadline"):
+            deadline_str = goal_data["deadline"].strftime("%d.%m.%Y %H:%M")
+
         return ft.Container(
             content=ft.Row(
                 [
                     checkbox,
-                    ft.Text(goal_data["name"], size=16, expand=True),
+                    ft.Column(
+                        [
+                            ft.Text(goal_data["name"], size=16),
+                            ft.Text(deadline_str, size=12, color=ft.Colors.GREY_400),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
                     delete_btn,
                 ],
                 alignment=ft.MainAxisAlignment.START,
@@ -83,10 +95,10 @@ def main(page: ft.Page):
         on_submit=lambda e: add_new_goal(e),
     )
 
-    selected_deadline = None #здесь позже будет дата
+    selected_deadline = None  # здесь будет datetime или None
 
     deadline_input = ft.TextField(
-        hint_text="Дедлайн (гггг-мм-дд)",
+        hint_text="Дедлайн (дд.мм.гггг чч:мм)",
         value="Не установлен",
         read_only=True,
         expand=True,
@@ -94,44 +106,52 @@ def main(page: ft.Page):
         height=48,
     )
 
+    def handle_deadline_change(e):
+        nonlocal selected_deadline
+        if e.control.value:
+            selected_deadline = e.control.value  # это datetime
+            deadline_input.value = selected_deadline.strftime("%d.%m.%Y %H:%M")
+            page.update()
+
+    deadline_btn = ft.ElevatedButton(
+        text="Выбрать дату и время",
+        icon=ft.Icons.CALENDAR_MONTH,
+        on_click=lambda e: page.open(
+            ft.CupertinoBottomSheet(
+                ft.CupertinoDatePicker(
+                    date_picker_mode=ft.CupertinoDatePickerMode.DATE_AND_TIME,
+                    on_change=handle_deadline_change,
+                ),
+                height=216,
+                padding=ft.padding.only(top=6),
+            )
+        ),
+    )
 
     def add_new_goal(e):
+        nonlocal selected_deadline
         text = new_goal_input.value.strip()
         if not text:
             return
 
-        new_goal = {"name": text, "completed": False, "deadline": selected_deadline}
+        new_goal = {
+            "name": text,
+            "completed": False,
+            "deadline": selected_deadline  # datetime или None
+        }
         goals.append(new_goal)
 
         index = len(goals) - 1
         card = create_goal_card(new_goal, index)
         goals_container.controls.append(card)
 
+        # Сброс после добавления
         new_goal_input.value = ""
+        selected_deadline = None
+        deadline_input.value = "Не установлен"
         update_progress()
         page.update()
         new_goal_input.focus()
-
-    #ыункция открытия календаря
-    def pick_deadline(e):
-        def on_date_change(e):
-            nonlocal selected_deadline
-            if e.control.value:
-                selected_date=e.control.value
-                selected_deadline=selected_date
-                deadline_input.value=selected_date.strftime("%Y-%m-%d")
-                page.update()
-            page.close()
-        date_picker = ft.DatePicker(
-            first_date=datetime.now().date(),
-            last_date=datetime.now().date() + timedelta(days=365),
-            on_change=on_date_change,
-            confirm_text="OK",
-            cancel_text="Отмена",
-        )
-        page.overlay.append(date_picker)
-        page.update()
-        page.open(ft.AlertDialog(content=date_picker, actions_alignment=ft.MainAxisAlignment.END,))
 
     # Кнопка добавления
     add_btn = ft.ElevatedButton(
@@ -145,31 +165,16 @@ def main(page: ft.Page):
         ),
     )
 
-    #кнопка календаря
-    calendar_btn=ft.IconButton(
-        icon=ft.Icons.CALENDAR_MONTH,
-        icon_color=ft.Colors.BLUE_400,
-        tooltip="Выбрать дату",
-        on_click=pick_deadline,
-    )
-
-    #объединили в столбик
-    deadline_row=ft.Row(
-        [deadline_input, calendar_btn],
-        spacing=8,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-    )
-    #наш главный (общий) столбик
+    # Область ввода
     input_area = ft.Column(
         [
-            ft.Row([new_goal_input, add_btn],
-        spacing=12),
-        deadline_row,
+            ft.Row([new_goal_input, add_btn], spacing=12),
+            ft.Row([deadline_input, deadline_btn], spacing=12),
         ],
         spacing=12,
     )
 
-    # Вот здесь основной фон приложения
+    # Основной контейнер
     main_container = ft.Container(
         content=ft.Column(
             [
@@ -186,13 +191,12 @@ def main(page: ft.Page):
             expand=True,
             scroll=ft.ScrollMode.AUTO,
         ),
-        bgcolor=ft.Colors.BLACK12,           # ← меняй здесь (рекомендую начать с GREY_800 или BLUE_GREY_800)
+        bgcolor=ft.Colors.BLACK12,
         expand=True,
         padding=20,
     )
 
     page.add(main_container)
-
-    update_progress()   # ← инициализация прогресса
+    update_progress()
 
 ft.app(target=main)
