@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Flet / web
+.flet/
+build/
+dist/
+*.egg-info/
