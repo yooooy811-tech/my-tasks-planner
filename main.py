@@ -74,6 +74,25 @@ def main(page: ft.Page):
             for s in subgoals:
                 s["weight"] = s.get("weight", 1.0) / total_weight
 
+    def force_equal_weights(subgoals):
+        if not subgoals:
+            return
+        w = 1.0 / len(subgoals)
+        for s in subgoals:
+            s["weight"] = w
+
+    
+
+    def get_max_allowed_weight(subgoals, current_goal):
+        used = 0.0
+        for s in subgoals:
+            if s is not current_goal:
+                used += s["weight"]
+        remaining = 1.0 - used
+        return max(remaining, 0.0)
+
+
+
     # ---------------- СОЗДАНИЕ КАРТОЧКИ ЦЕЛИ ----------------
     def create_goal_card(goal_data, parent=None, level=0):
         subgoals_container = ft.Column(spacing=8)
@@ -141,11 +160,33 @@ def main(page: ft.Page):
             size=16,
         )
 
+        def on_weight_change(e):
+            try:
+                new_weight = float(e.control.value)
+            except:
+                return
+
+            siblings = parent["subgoals"] if parent else []
+            max_allowed = get_max_allowed_weight(siblings, goal_data)
+
+            goal_data["weight"] = min(max(new_weight, 0.0001), max_allowed)
+            redistribute_equal_weights(siblings, locked_goal=goal_data)
+            recalc_all_progress()
+
+        current_weight_input = ft.TextField(
+            value=str(goal_data.get("weight", 1.0)),
+            width=80,
+            on_change=on_weight_change,
+            )
+
         subgoal_input = ft.TextField(hint_text="Название подцели", expand=True)
+
+
         weight_input = ft.TextField(
             hint_text="Вес (по умолчанию 1.0)",
-            value="1.0",
+            value=str(goal_data.get("weight", 1.0)),
             width=100,
+            #on_change=on_weight_change,
         )
 
         selected_sub_deadline = None
@@ -186,22 +227,42 @@ def main(page: ft.Page):
             if not name:
                 return
 
-            weight = float(weight_input.value or 1.0)
+            try:
+                weight = float(weight_input.value)
+                if weight <= 0:
+                    weight = None
+            except:
+                weight = None
 
-            goal_data["subgoals"].append(
-                {
-                    "name": name,
-                    "completed": False,
-                    "deadline": selected_sub_deadline,
-                    "subgoals": [],
-                    "weight": weight,
-                }
-            )
+            new_subgoal = {
+                "name": name,
+                "completed": False,
+                "deadline": selected_sub_deadline,
+                "subgoals": [],
+                "weight": 1.0,  # временно
+            }
 
-            # ПАТЧ: если добавили подцель — цель больше не completed
+            goal_data["subgoals"].append(new_subgoal)
+
+            # 1. СНАЧАЛА — всегда честно делим по количеству
+            force_equal_weights(goal_data["subgoals"])
+
+            # 2. ЕСЛИ пользователь задал вес — применяем его ПОСЛЕ
+            if weight is not None:
+                max_allowed = get_max_allowed_weight(goal_data["subgoals"], new_subgoal)
+                new_subgoal["weight"] = min(weight, max_allowed)
+
+                # остальные перерасчитываем
+                remaining = 1.0 - new_subgoal["weight"]
+                others = [s for s in goal_data["subgoals"] if s is not new_subgoal]
+                if others:
+                    eq = remaining / len(others)
+                    for s in others:
+                        s["weight"] = eq
+
+
             goal_data["completed"] = False
 
-            normalize_weights(goal_data["subgoals"])
             subgoal_input.value = ""
             weight_input.value = "1.0"
             selected_sub_deadline = None
@@ -209,6 +270,8 @@ def main(page: ft.Page):
 
             refresh_subgoals()
             recalc_all_progress()
+
+
 
         def refresh_subgoals():
             subgoals_container.controls.clear()
@@ -228,6 +291,7 @@ def main(page: ft.Page):
             title=ft.Row(
                 [
                     checkbox,
+                    current_weight_input if level > 0 else ft.Container(),
                     ft.Column(
                         [
                             name_text,
