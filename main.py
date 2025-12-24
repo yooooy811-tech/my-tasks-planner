@@ -20,7 +20,7 @@ def main(page: ft.Page):
         progress_text.value = f"Прогресс: {completed} из {total}"
         page.update()
 
-    # Рекурсивный расчёт прогресса (с нормализацией весов, если сумма не 1)
+    # Рекурсивный расчёт прогресса
     def calculate_progress(goal):
         subgoals = goal.get("subgoals", [])
         if not subgoals:
@@ -33,15 +33,34 @@ def main(page: ft.Page):
         weighted_progress = sum(
             calculate_progress(s) * s.get("weight", 1.0) for s in subgoals
         )
-        return min(weighted_progress / total_weight, 1.0)  # Не больше 1.0
+        return min(weighted_progress / total_weight, 1.0)
 
-    # Создание карточки цели (рекурсивно для подцелей, с ExpansionTile для раскрытия)
+    # Создание карточки цели (рекурсивно)
     def create_goal_card(goal_data, parent=None, level=0):
         subgoals_container = ft.Column(spacing=8)
 
+        # Прогресс-бар (создаём здесь)
+        progress = calculate_progress(goal_data)
+        progress_bar = ft.ProgressBar(
+            value=progress,
+            width=200,
+            color=ft.Colors.GREEN_400 if progress > 0.8 else ft.Colors.BLUE_400,
+            bgcolor=ft.Colors.GREY_700,
+        )
+
         def toggle_completed(e):
             goal_data["completed"] = e.control.value
-            refresh_goals()  # Обновляем всё дерево
+            
+            # Обновляем прогресс этой карточки
+            progress_bar.value = calculate_progress(goal_data)
+            progress_bar.color = ft.Colors.GREEN_400 if progress_bar.value > 0.8 else ft.Colors.BLUE_400
+            
+            # Если это подцель — обновляем всю страницу (чтобы родительский прогресс обновился)
+            if parent is not None:
+                refresh_goals()  # ← полный refresh для обновления родителя
+            else:
+                page.update()  # Для большой цели — достаточно update
+            
             page.update()
 
         def delete_goal(e):
@@ -64,7 +83,6 @@ def main(page: ft.Page):
             tooltip="Удалить",
             on_click=delete_goal,
         )
-
         # Дедлайн и просрочка
         deadline_str = "Без срока"
         deadline_color = ft.Colors.GREY_400
@@ -73,15 +91,6 @@ def main(page: ft.Page):
             if goal_data["deadline"] < datetime.now() and not goal_data["completed"]:
                 deadline_color = ft.Colors.RED_400
                 deadline_str = "Просрочено! " + deadline_str
-
-        # Прогресс-бар
-        progress = calculate_progress(goal_data)
-        progress_bar = ft.ProgressBar(
-            value=progress,
-            width=200,
-            color=ft.Colors.GREEN_400 if progress > 0.8 else ft.Colors.BLUE_400,
-            bgcolor=ft.Colors.GREY_700,
-        )
 
         # Форма добавления подцели (внизу)
         subgoal_input = ft.TextField(hint_text="Название подцели", expand=True)
@@ -144,7 +153,7 @@ def main(page: ft.Page):
             refresh_subgoals()
             page.update()
 
-        # Обновление списка подцелей (без сворачивания)
+        # Обновление списка подцелей
         def refresh_subgoals():
             subgoals_container.controls.clear()
             for subgoal in goal_data["subgoals"]:
@@ -154,39 +163,39 @@ def main(page: ft.Page):
 
         refresh_subgoals()
 
-        # ExpansionTile для раскрытия подцелей
+        # ExpansionTile
         return ft.ExpansionTile(
-            title=ft.Row(
-                [
-                    checkbox,
+                title=ft.Row(
+                    [
+                        checkbox,
+                        ft.Column(
+                            [
+                                ft.Text(goal_data["name"], size=16),
+                                ft.Text(deadline_str, size=12, color=deadline_color),
+                                progress_bar,
+                            ],
+                            spacing=4,
+                            expand=True,
+                        ),
+                        delete_btn,
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                controls=[
+                    subgoals_container,
                     ft.Column(
                         [
-                            ft.Text(goal_data["name"], size=16),
-                            ft.Text(deadline_str, size=12, color=deadline_color),
-                            progress_bar,
+                            ft.Row([subgoal_input, weight_input, add_sub_btn], spacing=12),
+                            ft.Row([sub_deadline_input, sub_deadline_btn], spacing=12),
                         ],
-                        spacing=4,
-                        expand=True,
+                        spacing=12,
                     ),
-                    delete_btn,
                 ],
-                alignment=ft.MainAxisAlignment.START,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            controls=[
-                subgoals_container,
-                ft.Column(
-                    [
-                        ft.Row([subgoal_input, weight_input, add_sub_btn], spacing=12),
-                        ft.Row([sub_deadline_input, sub_deadline_btn], spacing=12),
-                    ],
-                    spacing=12,
-                ),
-            ],
-            maintain_state=True,  # Не сбрасывает состояние при обновлении
-            bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.BLUE_GREY_800),
-            shape=ft.RoundedRectangleBorder(radius=12),
-        )
+                maintain_state=True,
+                bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.BLUE_GREY_800),
+                shape=ft.RoundedRectangleBorder(radius=12),
+            )
 
     def refresh_goals():
         goals_container.controls.clear()
