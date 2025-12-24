@@ -1,5 +1,5 @@
 import flet as ft
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def main(page: ft.Page):
@@ -8,38 +8,73 @@ def main(page: ft.Page):
     page.padding = 20
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
+    # Данные: список больших целей
     goals = []
-    selected_deadline = None
 
     goals_container = ft.Column(spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
+
     progress_text = ft.Text("Прогресс: 0 из 0", size=14, color=ft.Colors.GREY_300)
 
     def update_progress():
         total = len(goals)
-        completed = sum(1 for g in goals if g["completed"])
+        completed = sum(1 for g in goals if calculate_progress(g) >= 0.999)
         progress_text.value = f"Прогресс: {completed} из {total}"
         page.update()
 
+    # ---------------- ПАТЧ: корректный рекурсивный расчёт ----------------
     def calculate_progress(goal):
         subgoals = goal.get("subgoals", [])
-        if not subgoals:
-            return 1.0 if goal["completed"] else 0.0
 
-        total_weight = sum(s.get("weight", 1.0) for s in subgoals)
-        if total_weight == 0:
-            return 0.0
+        # если есть подцели — считаем ТОЛЬКО по ним
+        if subgoals:
+            total_weight = sum(s.get("weight", 1.0) for s in subgoals)
+            if total_weight == 0:
+                return 0.0
 
-        weighted_progress = sum(
-            calculate_progress(s) * s.get("weight", 1.0)
-            for s in subgoals
-        )
-        return min(weighted_progress / total_weight, 1.0)
+            weighted_progress = sum(
+                calculate_progress(s) * s.get("weight", 1.0)
+                for s in subgoals
+            )
+            return min(weighted_progress / total_weight, 1.0)
 
+        # если подцелей нет — обычная галочка
+        return 1.0 if goal["completed"] else 0.0
+
+    # ---------------- ПАТЧ: глобальный пересчёт ВСЕГО ----------------
+    def recalc_all_progress():
+        def update_goal(goal):
+            progress = calculate_progress(goal)
+
+            if "progress_bar" in goal:
+                goal["progress_bar"].value = progress
+                goal["progress_bar"].color = ft.Colors.BLUE_300
+
+            if "progress_label" in goal:
+                goal["progress_label"].value = f"Прогресс: {int(progress * 100)}%"
+
+            for s in goal.get("subgoals", []):
+                update_goal(s)
+
+        for g in goals:
+            update_goal(g)
+
+        update_progress()
+        page.update()
+
+    # Рекурсивная отметка всех подцелей выполненными
     def mark_all_completed(goal):
         goal["completed"] = True
         for subgoal in goal.get("subgoals", []):
             mark_all_completed(subgoal)
 
+    # Нормализация весов подцелей
+    def normalize_weights(subgoals):
+        total_weight = sum(s.get("weight", 1.0) for s in subgoals)
+        if total_weight > 1.0:
+            for s in subgoals:
+                s["weight"] = s.get("weight", 1.0) / total_weight
+
+    # ---------------- СОЗДАНИЕ КАРТОЧКИ ЦЕЛИ ----------------
     def create_goal_card(goal_data, parent=None, level=0):
         subgoals_container = ft.Column(spacing=8)
 
@@ -47,8 +82,8 @@ def main(page: ft.Page):
         progress_bar = ft.ProgressBar(
             value=progress,
             width=200,
-            color=ft.Colors.GREEN_400 if progress > 0.8 else ft.Colors.BLUE_400,
-            bgcolor=ft.Colors.GREY_700,
+            color=ft.Colors.BLUE_300,
+            bgcolor=ft.Colors.BLUE_GREY_800,
         )
 
         progress_label = ft.Text(
@@ -60,33 +95,23 @@ def main(page: ft.Page):
 
         def toggle_completed(e):
             goal_data["completed"] = e.control.value
-            if goal_data["completed"] and level == 0:
-                mark_all_completed(goal_data)
 
-            new_progress = calculate_progress(goal_data)
-            progress_bar.value = new_progress
-            progress_bar.color = (
-                ft.Colors.GREEN_400 if new_progress > 0.8 else ft.Colors.BLUE_400
-            )
-            progress_label.value = f"Прогресс: {int(new_progress * 100)}%"
+            # если отметили цель с подцелями — проталкиваем вниз
+            if goal_data.get("subgoals"):
+                for s in goal_data["subgoals"]:
+                    mark_all_completed(s)
 
-            current_parent = parent
-            while current_parent is not None:
-                parent_progress = calculate_progress(current_parent)
-                current_parent["progress_bar"].value = parent_progress
-                current_parent["progress_label"].value = (
-                    f"Прогресс: {int(parent_progress * 100)}%"
-                )
-                current_parent = current_parent.get("parent")
-
-            page.update()
+            recalc_all_progress()
 
         def delete_goal(e):
-            if parent is not None:
+            if parent:
                 parent["subgoals"].remove(goal_data)
+                parent["completed"] = False
             else:
                 goals.remove(goal_data)
+
             refresh_goals()
+            recalc_all_progress()
 
         checkbox = ft.Checkbox(
             value=goal_data["completed"],
@@ -110,9 +135,17 @@ def main(page: ft.Page):
                 deadline_color = ft.Colors.RED_400
                 deadline_str = "Просрочено! " + deadline_str
 
+        name_text = ft.Text(
+            f"{goal_data['name']} (вес: {goal_data.get('weight', 1.0):.2f})"
+            if level > 0 else goal_data["name"],
+            size=16,
+        )
+
         subgoal_input = ft.TextField(hint_text="Название подцели", expand=True)
         weight_input = ft.TextField(
-            hint_text="Вес (по умолчанию 1.0)", value="1.0", width=100
+            hint_text="Вес (по умолчанию 1.0)",
+            value="1.0",
+            width=100,
         )
 
         selected_sub_deadline = None
@@ -154,6 +187,7 @@ def main(page: ft.Page):
                 return
 
             weight = float(weight_input.value or 1.0)
+
             goal_data["subgoals"].append(
                 {
                     "name": name,
@@ -164,19 +198,25 @@ def main(page: ft.Page):
                 }
             )
 
+            # ПАТЧ: если добавили подцель — цель больше не completed
+            goal_data["completed"] = False
+
+            normalize_weights(goal_data["subgoals"])
             subgoal_input.value = ""
             weight_input.value = "1.0"
             selected_sub_deadline = None
             sub_deadline_input.value = "Не установлен"
+
             refresh_subgoals()
-            page.update()
+            recalc_all_progress()
 
         def refresh_subgoals():
             subgoals_container.controls.clear()
-            for subgoal in goal_data["subgoals"]:
+            for s in goal_data["subgoals"]:
                 subgoals_container.controls.append(
-                    create_goal_card(subgoal, parent=goal_data, level=level + 1)
+                    create_goal_card(s, parent=goal_data, level=level + 1)
                 )
+            page.update()
 
         refresh_subgoals()
 
@@ -190,7 +230,7 @@ def main(page: ft.Page):
                     checkbox,
                     ft.Column(
                         [
-                            ft.Text(goal_data["name"], size=16),
+                            name_text,
                             ft.Text(deadline_str, size=12, color=deadline_color),
                             progress_bar,
                             progress_label,
@@ -199,7 +239,9 @@ def main(page: ft.Page):
                         expand=True,
                     ),
                     delete_btn,
-                ]
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             controls=[
                 subgoals_container,
@@ -209,14 +251,13 @@ def main(page: ft.Page):
                             [
                                 subgoal_input,
                                 weight_input,
-                                ft.ElevatedButton(
-                                    "Добавить", on_click=add_subgoal_click
-                                ),
+                                ft.ElevatedButton("Добавить", on_click=add_subgoal_click)
                             ],
                             spacing=12,
                         ),
                         ft.Row([sub_deadline_input, sub_deadline_btn], spacing=12),
-                    ]
+                    ],
+                    spacing=12,
                 ),
             ],
             maintain_state=True,
@@ -224,23 +265,31 @@ def main(page: ft.Page):
             shape=ft.RoundedRectangleBorder(radius=12),
         )
 
+    # ---------------- ОБНОВЛЕНИЕ ----------------
     def refresh_goals():
         goals_container.controls.clear()
         for goal in goals:
             goals_container.controls.append(create_goal_card(goal))
-        update_progress()
-        page.update()
+        recalc_all_progress()
 
     new_goal_input = ft.TextField(
         hint_text="Введите название большой цели...",
+        autofocus=True,
         expand=True,
+        border_radius=12,
+        height=48,
         on_submit=lambda e: add_new_goal(e),
     )
 
+    selected_deadline = None
+
     deadline_input = ft.TextField(
+        hint_text="Дедлайн (дд.мм.гггг чч:мм)",
         value="Не установлен",
         read_only=True,
         expand=True,
+        border_radius=12,
+        height=48,
     )
 
     def handle_deadline_change(e):
@@ -259,6 +308,7 @@ def main(page: ft.Page):
                     on_change=handle_deadline_change,
                 ),
                 height=216,
+                padding=ft.padding.only(top=6),
             )
         ),
     )
@@ -280,27 +330,54 @@ def main(page: ft.Page):
         )
 
         new_goal_input.value = ""
-        deadline_input.value = "Не установлен"
         selected_deadline = None
+        deadline_input.value = "Не установлен"
         refresh_goals()
+        new_goal_input.focus()
 
-    page.add(
-        ft.Column(
+    add_btn = ft.ElevatedButton(
+        "Добавить большую цель",
+        icon=ft.Icons.ADD,
+        on_click=add_new_goal,
+        height=48,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+    )
+
+    input_area = ft.Column(
+        [
+            ft.Row([new_goal_input, add_btn], spacing=12),
+            ft.Row([deadline_input, deadline_btn], spacing=12),
+        ],
+        spacing=12,
+    )
+
+    main_container = ft.Container(
+        content=ft.Column(
             [
                 ft.Text("Планировщик целей", size=28, weight=ft.FontWeight.BOLD),
-                progress_text,
-                ft.Row(
-                    [
-                        new_goal_input,
-                        ft.ElevatedButton("Добавить", on_click=add_new_goal),
-                    ]
+                ft.Text(
+                    "Разбивайте большие задачи на маленькие шаги",
+                    size=14,
+                    color=ft.Colors.GREY_400,
                 ),
-                ft.Row([deadline_input, deadline_btn]),
+                ft.Container(height=16),
+                progress_text,
+                ft.Container(height=8),
+                input_area,
+                ft.Container(height=16),
                 goals_container,
             ],
+            spacing=16,
             expand=True,
-        )
+            scroll=ft.ScrollMode.AUTO,
+        ),
+        bgcolor=ft.Colors.BLACK12,
+        expand=True,
+        padding=20,
     )
+
+    page.add(main_container)
+    recalc_all_progress()
 
 
 ft.app(target=main)
