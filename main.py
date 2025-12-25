@@ -27,15 +27,18 @@ def main(page: ft.Page):
 
         # если есть подцели — считаем ТОЛЬКО по ним
         if subgoals:
-            total_weight = sum(s.get("weight", 1.0) for s in subgoals)
-            if total_weight == 0:
-                return 0.0
+            progress = 0.0
+            for s in subgoals:
+                progress += calculate_progress(s) * s.get("weight", 0.0)
+            #total_weight = sum(s.get("weight", 1.0) for s in subgoals)
+            #if total_weight == 0:
+            #     return 0.0
 
-            weighted_progress = sum(
-                calculate_progress(s) * s.get("weight", 1.0)
-                for s in subgoals
-            )
-            return min(weighted_progress / total_weight, 1.0)
+            # weighted_progress = sum(
+            #     calculate_progress(s) * s.get("weight", 1.0)
+            #     for s in subgoals
+            # )
+            return min(progress, 1.0)
 
         # если подцелей нет — обычная галочка
         return 1.0 if goal["completed"] else 0.0
@@ -166,17 +169,28 @@ def main(page: ft.Page):
             except:
                 return
 
-            siblings = parent["subgoals"] if parent else []
-            max_allowed = get_max_allowed_weight(siblings, goal_data)
+            if new_weight < 0:
+                new_weight = 0.0
 
-            goal_data["weight"] = min(max(new_weight, 0.0001), max_allowed)
-            redistribute_equal_weights(siblings, locked_goal=goal_data)
+            # просто сохраняем, БЕЗ нормализации
+            if parent:
+                parent["manual_weights"] = True
+
+            goal_data["weight"] = new_weight
+
+            # обновляем подпись веса
+            name_text.value = (
+                f"{goal_data['name']} (вес: {goal_data['weight']:.2f})"
+            )
+
             recalc_all_progress()
+            page.update()
+
 
         current_weight_input = ft.TextField(
             value=str(goal_data.get("weight", 1.0)),
             width=80,
-            on_change=on_weight_change,
+            on_submit=on_weight_change
             )
 
         subgoal_input = ft.TextField(hint_text="Название подцели", expand=True)
@@ -239,13 +253,15 @@ def main(page: ft.Page):
                 "completed": False,
                 "deadline": selected_sub_deadline,
                 "subgoals": [],
-                "weight": 1.0,  # временно
+                "weight": 1.0, 
+                "manual_weights": False,
             }
 
             goal_data["subgoals"].append(new_subgoal)
 
-            # 1. СНАЧАЛА — всегда честно делим по количеству
-            force_equal_weights(goal_data["subgoals"])
+            # делим по количеству ТОЛЬКО если ещё нет ручных весов
+            if not goal_data.get("manual_weights", False):
+                force_equal_weights(goal_data["subgoals"])
 
             # 2. ЕСЛИ пользователь задал вес — применяем его ПОСЛЕ
             if weight is not None:
@@ -253,12 +269,12 @@ def main(page: ft.Page):
                 new_subgoal["weight"] = min(weight, max_allowed)
 
                 # остальные перерасчитываем
-                remaining = 1.0 - new_subgoal["weight"]
-                others = [s for s in goal_data["subgoals"] if s is not new_subgoal]
-                if others:
-                    eq = remaining / len(others)
-                    for s in others:
-                        s["weight"] = eq
+                # remaining = 1.0 - new_subgoal["weight"]
+                # others = [s for s in goal_data["subgoals"] if s is not new_subgoal]
+                # if others:
+                #     eq = remaining / len(others)
+                #     for s in others:
+                #         s["weight"] = eq
 
 
             goal_data["completed"] = False
@@ -390,6 +406,7 @@ def main(page: ft.Page):
                 "deadline": selected_deadline,
                 "subgoals": [],
                 "weight": 1.0,
+                "manual_weights": False,
             }
         )
 
