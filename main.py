@@ -186,6 +186,8 @@ def main(page: ft.Page):
 
         save_state()
         recalc_all_progress()
+        render_view()
+        content_container.opacity = 1.0
         page.update()
 
     sync_btn = ft.ElevatedButton('Синхронизировать', icon=ft.Icons.REFRESH, on_click=do_sync)
