@@ -942,12 +942,19 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    # Если PORT есть — мы на сервере (Render → iPhone)
     is_web = os.environ.get("PORT") is not None
 
-    ft.app(
-        target=main,
-        view=ft.WEB_BROWSER if is_web else ft.FLET_APP,
-        host="0.0.0.0" if is_web else None,
-        port=int(os.environ["PORT"]) if is_web else None,
-    )
+    if is_web:
+        # Render / iPhone (web)
+        ft.app(
+            target=main,
+            view=ft.WEB_BROWSER,
+            host="0.0.0.0",
+            port=int(os.environ["PORT"]),
+        )
+    else:
+        # ПК / ноут (desktop)
+        ft.app(
+            target=main,
+            view=ft.FLET_APP,
+        )
