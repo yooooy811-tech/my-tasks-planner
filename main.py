@@ -328,6 +328,7 @@ def main(page: ft.Page):
         def toggle_completed(e):
             goal_data["completed"] = e.control.value
             goal_data["last_modified"] = datetime.now()
+            update_parents_modified(goal_data)  # ← Добавь эту строку
             recalc_all_progress()
 
         def delete_goal(e):
@@ -337,6 +338,10 @@ def main(page: ft.Page):
                 goals.remove(goal_data)
             render_view()
             recalc_all_progress()
+            if current_goal and current_goal.get("subgoals"):
+                update_parents_modified(current_goal)  # ← Добавь
+            elif "progress_text" in globals():  # для топ-уровня
+                update_parents_modified(goal_data)  # если удалили топ-цель
 
         def open_edit_goal_dialog(goal):
             print(f"DEBUG: open_edit_goal_dialog called for {goal.get('name')}")
@@ -402,6 +407,7 @@ def main(page: ft.Page):
                 goal["deadline"] = selected_deadline
                 # mark modified
                 goal["last_modified"] = datetime.now()
+                update_parents_modified(goal)
                 # normalize weights among siblings if this is a subgoal
                 parent = find_parent(goal)
                 if parent and parent.get("subgoals"):
@@ -679,6 +685,15 @@ def main(page: ft.Page):
             if parent:
                 return parent
         return None
+    
+
+    def update_parents_modified(goal):
+        """Обновляет last_modified у всех родителей цели (вплоть до топ-уровня)"""
+        parent = find_parent(goal)
+        while parent:
+            parent["last_modified"] = datetime.now()
+            parent = find_parent(parent)
+    
 
     def adjust_weight_on_set(goal, new_weight):
         """Set goal weight capped so siblings sum <= 1. Marks parent.manual_weights = True."""
@@ -859,6 +874,7 @@ def main(page: ft.Page):
         new_subgoal_input.value = ""
         render_view()
         recalc_all_progress()
+        update_parents_modified(new) if weight is not None else update_parents_modified(subs[-1])
         page.update()
 
     add_subgoal_btn.on_click = add_subgoal
