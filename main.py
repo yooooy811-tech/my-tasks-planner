@@ -14,6 +14,7 @@ def main(page: ft.Page):
     navigation_stack = []
 
     page.title = "Мой Планировщик Целей"
+    page.window.icon = os.path.abspath("iconforflet.ico")  # Если в подпапке: os.path.abspath("assets/icons/app_icon.ico")
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 20
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
