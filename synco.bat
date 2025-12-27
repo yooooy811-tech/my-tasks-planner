@@ -1,0 +1,6 @@
+@echo off
+set SUPABASE_URL=https://bjrpkmeggyggdolgasdh.supabase.co
+set SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJqcnBrbWVnZ3lnZ2RvbGdhc2RoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY4MzgzNzEsImV4cCI6MjA4MjQxNDM3MX0._oGCeqKW8Ojlvc4Q5EUhnkXWHjwrSeSlDYMCsGmX9-A
+set USER_ID=yooooy811@gmail.com
+python main.py
+pause
