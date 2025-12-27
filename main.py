@@ -67,11 +67,14 @@ def main(page: ft.Page):
             )
         )
 
+        progress_val = calculate_progress(current_goal)
+        # header progress bar + percent (store on current_goal for live updates)
+        header_bar = ft.ProgressBar(value=progress_val, height=12, color=ft.Colors.GREEN_400, expand=True)
+        header_label = ft.Text(f"{int(progress_val*100)}%", size=12, color=ft.Colors.GREY_400)
+        current_goal["header_progress_bar"] = header_bar
+        current_goal["header_progress_label"] = header_label
         content_column.controls.append(
-            ft.ProgressBar(
-                value=calculate_progress(current_goal),
-                height=12,
-            )
+            ft.Row([header_bar, ft.Container(width=12), header_label], vertical_alignment=ft.CrossAxisAlignment.CENTER)
         )
 
         # Форма добавления подцели
@@ -426,6 +429,17 @@ def main(page: ft.Page):
         for g in goals:
             update_goal(g)
 
+        # update header progress for currently opened goal (if any)
+        if current_goal is not None:
+            try:
+                hp = calculate_progress(current_goal)
+                if "header_progress_bar" in current_goal:
+                    current_goal["header_progress_bar"].value = hp
+                if "header_progress_label" in current_goal:
+                    current_goal["header_progress_label"].value = f"{int(hp*100)}%"
+            except Exception:
+                pass
+
         update_progress()
         page.update()
 
@@ -520,6 +534,7 @@ def main(page: ft.Page):
     )
 
     def add_subgoal(e):
+        # Inline creation panel: name, optional weight, optional deadline
         try:
             print("DEBUG: add_subgoal clicked")
             print(f"DEBUG: current_goal is {current_goal.get('name') if current_goal else None}")
@@ -532,11 +547,10 @@ def main(page: ft.Page):
 
         selected_subgoal_deadline = None
 
-        sub_deadline_input = ft.TextField(
-            value="Не установлен",
-            read_only=True,
-            expand=True,
-        )
+        sub_name_input = ft.TextField(value=text, expand=True)
+        weight_input = ft.TextField(hint_text="Вес (опционально)", keyboard_type=ft.KeyboardType.NUMBER)
+
+        sub_deadline_input = ft.TextField(value="Не установлен", read_only=True, expand=True)
 
         def handle_subgoal_deadline_change(ev):
             nonlocal selected_subgoal_deadline
@@ -562,73 +576,32 @@ def main(page: ft.Page):
             ),
         )
 
-        add_btn = ft.ElevatedButton("Добавить")
-        cancel_btn = ft.TextButton("Отмена")
+        def _final_add(ev):
+            nm = sub_name_input.value.strip() or text
+            w = None
+            try:
+                if weight_input.value.strip():
+                    w = float(weight_input.value)
+            except Exception:
+                w = None
+            add_subgoal_to_goal(None, nm, selected_subgoal_deadline, w)
 
-        def _on_dialog_add(ev):
-            print(f"DEBUG: dialog add button clicked (text='{text}')")
-            add_subgoal_to_goal(dialog, text, selected_subgoal_deadline)
-
-        def _on_dialog_cancel(ev):
-            setattr(dialog, "open", False)
-            page.update()
-
-        add_btn.on_click = _on_dialog_add
-        print("DEBUG: add_btn.on_click assigned")
-        cancel_btn.on_click = _on_dialog_cancel
-        print("DEBUG: cancel_btn.on_click assigned")
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Создать подцель"),
-            content=ft.Column([
-                ft.Text(text),
-                ft.Row([sub_deadline_input, deadline_btn], spacing=12),
-            ], spacing=12),
-            actions=[add_btn, cancel_btn],
-        )
-
-        print("DEBUG: subgoal dialog created")
-        page.dialog = dialog
-        dialog.open = True
-        print("DEBUG: subgoal dialog opened")
-        page.update()
-
-        # Inline fallback: add separate buttons to avoid duplicate invocation
-        def _remove_inline_panel():
+        def _cancel(ev):
             try:
                 content_column.controls.remove(inline_panel)
             except Exception:
                 pass
             page.update()
 
-        inline_add_btn = ft.ElevatedButton("Добавить")
-        inline_cancel_btn = ft.TextButton("Отмена")
-
-        def _inline_add(ev):
-            print("DEBUG: inline add clicked")
-            _remove_inline_panel()
-            try:
-                add_subgoal_to_goal(dialog, text, selected_subgoal_deadline)
-            except Exception as ex:
-                print("DEBUG: error in inline add_subgoal:", ex)
-
-        def _inline_cancel(ev):
-            print("DEBUG: inline cancel clicked")
-            _remove_inline_panel()
-            try:
-                setattr(dialog, "open", False)
-                page.update()
-            except Exception as ex:
-                print("DEBUG: error in inline cancel:", ex)
-
-        inline_add_btn.on_click = _inline_add
-        inline_cancel_btn.on_click = _inline_cancel
+        add_btn_inline = ft.ElevatedButton("Добавить", on_click=_final_add)
+        cancel_btn_inline = ft.TextButton("Отмена", on_click=_cancel)
 
         inline_panel = ft.Container(
             content=ft.Column([
-                ft.Text(f"Добавить подцель: {text}"),
+                sub_name_input,
+                weight_input,
                 ft.Row([sub_deadline_input, deadline_btn], spacing=12),
-                ft.Row([inline_add_btn, inline_cancel_btn], spacing=12),
+                ft.Row([add_btn_inline, cancel_btn_inline], spacing=12),
             ], spacing=8),
             padding=12,
             border_radius=8,
@@ -637,8 +610,10 @@ def main(page: ft.Page):
 
         content_column.controls.append(inline_panel)
         page.update()
+        new_subgoal_input.value = ""
+        new_subgoal_input.focus()
 
-    def add_subgoal_to_goal(dialog, text, selected_subgoal_deadline):
+    def add_subgoal_to_goal(dialog, text, selected_subgoal_deadline, weight=None):
         try:
             print(f"DEBUG: add_subgoal_to_goal: adding '{text}' to {current_goal.get('name') if current_goal else None}")
         except Exception:
@@ -646,28 +621,37 @@ def main(page: ft.Page):
 
         parent = current_goal
         subs = parent.setdefault("subgoals", [])
-        # decide initial weight
-        if parent.get("manual_weights", False):
-            # give remaining weight to new subgoal (could be 0)
-            remaining = max(0.0, 1.0 - sum(float(s.get("weight", 0.0)) for s in subs))
-            w = remaining
-            subs.append({
-                "name": text,
-                "completed": False,
-                "deadline": selected_subgoal_deadline,
-                "subgoals": [],
-                "weight": w,
-            })
+        # if user specified a weight on creation, apply it (cap by siblings)
+        if weight is not None:
+            # append with provisional 0 then adjust
+            new = {"name": text, "completed": False, "deadline": selected_subgoal_deadline, "subgoals": [], "weight": 0.0}
+            subs.append(new)
+            assigned = adjust_weight_on_set(new, weight)
+            # if assigned was 0 and parent was manual, it's allowed
         else:
-            # automatic equal redistribution among all subgoals
-            subs.append({
-                "name": text,
-                "completed": False,
-                "deadline": selected_subgoal_deadline,
-                "subgoals": [],
-                "weight": 0.0,
-            })
-            normalize_weights_in_parent(parent)
+            # decide initial weight
+            if parent.get("manual_weights", False):
+                # give remaining weight to new subgoal (could be 0)
+                remaining = max(0.0, 1.0 - sum(float(s.get("weight", 0.0)) for s in subs))
+                w = remaining
+                subs.append({
+                    "name": text,
+                    "completed": False,
+                    "deadline": selected_subgoal_deadline,
+                    "subgoals": [],
+                    "weight": w,
+                })
+            else:
+                # automatic equal redistribution among all subgoals
+                subs.append({
+                    "name": text,
+                    "completed": False,
+                    "deadline": selected_subgoal_deadline,
+                    "subgoals": [],
+                    "weight": 0.0,
+                })
+                normalize_weights_in_parent(parent)
+
         # close dialog if provided (None when using inline fallback)
         try:
             if dialog:
