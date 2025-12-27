@@ -1,6 +1,12 @@
 import flet as ft
 from datetime import datetime, timedelta
 import asyncio
+import json
+import os
+from pathlib import Path
+import uuid
+import time
+import traceback
 
 
 def main(page: ft.Page):
@@ -14,6 +20,170 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
 
     goals = []
+
+    # --- Persistence helpers ------------------------------------------------
+    def get_data_dir():
+        if os.name == 'nt':
+            base = os.getenv('APPDATA') or str(Path.home())
+        else:
+            base = str(Path.home())
+        d = Path(base) / ".my_tasks_planner"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    STATE_FILE = get_data_dir() / "state.json"
+    CONFIG_FILE = get_data_dir() / "config.json"
+
+    def to_serializable(o):
+        # Convert known simple types and recursively convert dicts/lists.
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                # skip UI controls and callables
+                try:
+                    if isinstance(v, ft.Control) or callable(v):
+                        continue
+                except Exception:
+                    pass
+                out[k] = to_serializable(v)
+            return out
+        if isinstance(o, list):
+            return [to_serializable(x) for x in o]
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, (str, int, float, bool)) or o is None:
+            return o
+        # fallback: for unsupported types, return string representation
+        return str(o)
+
+    def from_serializable(o):
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                if isinstance(v, str) and k in ("deadline", "last_modified"):
+                    try:
+                        out[k] = datetime.fromisoformat(v)
+                        continue
+                    except Exception:
+                        pass
+                out[k] = from_serializable(v)
+            return out
+        if isinstance(o, list):
+            return [from_serializable(x) for x in o]
+        return o
+
+    def load_state():
+        if not STATE_FILE.exists():
+            return []
+        try:
+            with STATE_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return from_serializable(data)
+        except Exception as ex:
+            print("DEBUG: load_state failed:", ex)
+            traceback.print_exc()
+            return []
+
+    def save_state():
+        try:
+            tmp = STATE_FILE.with_suffix('.tmp')
+            with tmp.open("w", encoding="utf-8") as f:
+                json.dump(to_serializable(goals), f, ensure_ascii=False, indent=2)
+            tmp.replace(STATE_FILE)
+        except Exception as ex:
+            print("DEBUG: save_state failed:", ex)
+            traceback.print_exc()
+
+    # load existing state (if any)
+    _saved = load_state()
+    if _saved:
+        goals = _saved
+
+    # --- Optional cloud sync scaffolding (Supabase) ------------------------
+    # Place credentials into the config json at the data dir (see README below). Example:
+    # {"SUPABASE_URL": "https://xyz.supabase.co", "SUPABASE_KEY": "public-anon-key", "USER_ID": "user@example.com"}
+    CONFIG = {}
+    try:
+        if CONFIG_FILE.exists():
+            with CONFIG_FILE.open('r', encoding='utf-8') as f:
+                CONFIG = json.load(f)
+    except Exception:
+        pass
+
+    class SyncClient:
+        def __init__(self, cfg):
+            self.cfg = cfg or {}
+            self.enabled = False
+            self.client = None
+            try:
+                from supabase import create_client
+                url = self.cfg.get('SUPABASE_URL')
+                key = self.cfg.get('SUPABASE_KEY')
+                if url and key:
+                    self.client = create_client(url, key)
+                    self.enabled = True
+            except Exception as ex:
+                print('DEBUG: Supabase not available or not configured:', ex)
+                self.client = None
+                self.enabled = False
+
+        def push_state(self, user_id='default'):
+            if not self.enabled or not self.client:
+                return False
+            try:
+                state = to_serializable(goals)
+                # expects a table 'user_states' with columns (user_id text primary key, state jsonb, updated_at timestamptz)
+                self.client.table('user_states').upsert({'user_id': user_id, 'state': state, 'updated_at': datetime.now().isoformat()}).execute()
+                return True
+            except Exception as ex:
+                print('DEBUG: push_state failed:', ex)
+                return False
+
+        def pull_state(self, user_id='default'):
+            if not self.enabled or not self.client:
+                return None
+            try:
+                r = self.client.table('user_states').select('state').eq('user_id', user_id).execute()
+                if r.data:
+                    return from_serializable(r.data[0]['state'])
+            except Exception as ex:
+                print('DEBUG: pull_state failed:', ex)
+            return None
+
+    sync_client = SyncClient(CONFIG)
+
+    # UI sync controls
+    sync_status = ft.Text('', size=12, color=ft.Colors.GREY_400)
+
+    def do_sync(e):
+        if not sync_client.enabled:
+            sync_status.value = 'Синхронизация не настроена. Поместите credentials в config.json'
+            page.update()
+            return
+        sync_status.value = 'Синхронизация...' 
+        page.update()
+        remote = sync_client.pull_state(CONFIG.get('USER_ID', 'default'))
+        if remote:
+            try:
+                remote_latest = max((g.get('last_modified') for g in remote if g.get('last_modified')), default=None)
+                local_latest = max((g.get('last_modified') for g in goals if g.get('last_modified')), default=None)
+                if remote_latest and (not local_latest or remote_latest > local_latest):
+                    goals.clear()
+                    goals.extend(remote)
+                    sync_status.value = 'Состояние загружено из облака'
+                else:
+                    ok = sync_client.push_state(CONFIG.get('USER_ID', 'default'))
+                    sync_status.value = 'Загружено в облако' if ok else 'Не удалось загрузить в облако'
+            except Exception as ex:
+                sync_status.value = f'Ошибка слияния: {ex}'
+        else:
+            ok = sync_client.push_state(CONFIG.get('USER_ID', 'default'))
+            sync_status.value = 'Загружено в облако' if ok else 'Не удалось загрузить в облако'
+        save_state()
+        recalc_all_progress()
+        page.update()
+
+    sync_btn = ft.ElevatedButton('Синхронизировать', icon=ft.Icons.REFRESH, on_click=do_sync)
 
     content_column = ft.Column(
         spacing=16,
@@ -36,6 +206,8 @@ def main(page: ft.Page):
                 ft.Text("Разбивайте большие задачи на маленькие шаги", size=14, color=ft.Colors.GREY_400),
                 ft.Container(height=16),
                 progress_text,
+                ft.Container(height=8),
+                ft.Row([sync_btn, sync_status], spacing=12),
                 ft.Container(height=8),
                 input_area,
                 ft.Container(height=16),
@@ -148,6 +320,7 @@ def main(page: ft.Page):
 
         def toggle_completed(e):
             goal_data["completed"] = e.control.value
+            goal_data["last_modified"] = datetime.now()
             recalc_all_progress()
 
         def delete_goal(e):
@@ -220,6 +393,8 @@ def main(page: ft.Page):
                         goal["weight"] = goal.get("weight", 1.0)
                 # update deadline
                 goal["deadline"] = selected_deadline
+                # mark modified
+                goal["last_modified"] = datetime.now()
                 # normalize weights among siblings if this is a subgoal
                 parent = find_parent(goal)
                 if parent and parent.get("subgoals"):
@@ -441,6 +616,11 @@ def main(page: ft.Page):
                 pass
 
         update_progress()
+        # persist state on every recalculation
+        try:
+            save_state()
+        except Exception:
+            pass
         page.update()
 
     def normalize_weights(subs):
@@ -611,7 +791,14 @@ def main(page: ft.Page):
         content_column.controls.append(inline_panel)
         page.update()
         new_subgoal_input.value = ""
-        new_subgoal_input.focus()
+        # focus the inline input (safer) and fall back to top-level input on error
+        try:
+            sub_name_input.focus()
+        except Exception:
+            try:
+                new_subgoal_input.focus()
+            except Exception:
+                pass
 
     def add_subgoal_to_goal(dialog, text, selected_subgoal_deadline, weight=None):
         try:
@@ -624,7 +811,7 @@ def main(page: ft.Page):
         # if user specified a weight on creation, apply it (cap by siblings)
         if weight is not None:
             # append with provisional 0 then adjust
-            new = {"name": text, "completed": False, "deadline": selected_subgoal_deadline, "subgoals": [], "weight": 0.0}
+            new = {"id": uuid.uuid4().hex, "name": text, "completed": False, "deadline": selected_subgoal_deadline, "subgoals": [], "weight": 0.0, "last_modified": datetime.now()}
             subs.append(new)
             assigned = adjust_weight_on_set(new, weight)
             # if assigned was 0 and parent was manual, it's allowed
@@ -635,20 +822,24 @@ def main(page: ft.Page):
                 remaining = max(0.0, 1.0 - sum(float(s.get("weight", 0.0)) for s in subs))
                 w = remaining
                 subs.append({
+                    "id": uuid.uuid4().hex,
                     "name": text,
                     "completed": False,
                     "deadline": selected_subgoal_deadline,
                     "subgoals": [],
                     "weight": w,
+                    "last_modified": datetime.now(),
                 })
             else:
                 # automatic equal redistribution among all subgoals
                 subs.append({
+                    "id": uuid.uuid4().hex,
                     "name": text,
                     "completed": False,
                     "deadline": selected_subgoal_deadline,
                     "subgoals": [],
                     "weight": 0.0,
+                    "last_modified": datetime.now(),
                 })
                 normalize_weights_in_parent(parent)
 
@@ -705,11 +896,13 @@ def main(page: ft.Page):
 
         goals.append(
             {
+                "id": uuid.uuid4().hex,
                 "name": text,
                 "completed": False,
                 "deadline": selected_deadline,
                 "subgoals": [],
                 "manual_weights": False,
+                "last_modified": datetime.now(),
             }
         )
 
