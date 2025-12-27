@@ -33,7 +33,6 @@ def main(page: ft.Page):
         return d
 
     STATE_FILE = get_data_dir() / "state.json"
-    CONFIG_FILE = get_data_dir() / "config.json"
 
     def to_serializable(o):
         # Convert known simple types and recursively convert dicts/lists.
@@ -100,86 +99,91 @@ def main(page: ft.Page):
     if _saved:
         goals = _saved
 
-    # --- Optional cloud sync scaffolding (Supabase) ------------------------
-    # Place credentials into the config json at the data dir (see README below). Example:
-    # {"SUPABASE_URL": "https://xyz.supabase.co", "SUPABASE_KEY": "public-anon-key", "USER_ID": "user@example.com"}
-    CONFIG = {}
-    try:
-        if CONFIG_FILE.exists():
-            with CONFIG_FILE.open('r', encoding='utf-8') as f:
-                CONFIG = json.load(f)
-    except Exception:
-        pass
 
+        # --- Cloud sync with Supabase using Environment Variables ---------------
+    # Теперь credentials берутся из переменных окружения:
+    # SUPABASE_URL, SUPABASE_KEY, USER_ID
+    # На Render.com задай их в Dashboard → Environment
+    # Локально можно задать в терминале: export SUPABASE_URL="https://..." и т.д.
     class SyncClient:
-        def __init__(self, cfg):
-            self.cfg = cfg or {}
+        def __init__(self):
             self.enabled = False
             self.client = None
+            self.user_id = os.environ.get('USER_ID', 'default')
             try:
                 from supabase import create_client
-                url = self.cfg.get('SUPABASE_URL')
-                key = self.cfg.get('SUPABASE_KEY')
+                url = os.environ.get('SUPABASE_URL')
+                key = os.environ.get('SUPABASE_KEY')
                 if url and key:
                     self.client = create_client(url, key)
                     self.enabled = True
+                    print("DEBUG: Supabase подключён через ENV")
+                else:
+                    print("DEBUG: Supabase ENV не заданы")
             except Exception as ex:
-                print('DEBUG: Supabase not available or not configured:', ex)
-                self.client = None
-                self.enabled = False
+                print('DEBUG: Supabase не доступен:', ex)
 
-        def push_state(self, user_id='default'):
+        def push_state(self, user_id=None):
             if not self.enabled or not self.client:
                 return False
+            uid = user_id or self.user_id
             try:
                 state = to_serializable(goals)
-                # expects a table 'user_states' with columns (user_id text primary key, state jsonb, updated_at timestamptz)
-                self.client.table('user_states').upsert({'user_id': user_id, 'state': state, 'updated_at': datetime.now().isoformat()}).execute()
+                self.client.table('user_states').upsert({
+                    'user_id': uid,
+                    'state': state,
+                    'updated_at': datetime.now().isoformat()
+                }).execute()
                 return True
             except Exception as ex:
-                print('DEBUG: push_state failed:', ex)
+                print('DEBUG: push_state error:', ex)
                 return False
 
-        def pull_state(self, user_id='default'):
+        def pull_state(self, user_id=None):
             if not self.enabled or not self.client:
                 return None
+            uid = user_id or self.user_id
             try:
-                r = self.client.table('user_states').select('state').eq('user_id', user_id).execute()
+                r = self.client.table('user_states').select('state').eq('user_id', uid).execute()
                 if r.data:
                     return from_serializable(r.data[0]['state'])
             except Exception as ex:
-                print('DEBUG: pull_state failed:', ex)
+                print('DEBUG: pull_state error:', ex)
             return None
 
-    sync_client = SyncClient(CONFIG)
+    sync_client = SyncClient()
 
     # UI sync controls
     sync_status = ft.Text('', size=12, color=ft.Colors.GREY_400)
 
     def do_sync(e):
         if not sync_client.enabled:
-            sync_status.value = 'Синхронизация не настроена. Поместите credentials в config.json'
+            sync_status.value = 'Синхронизация не настроена.\nЗадайте на Render.com переменные:\nSUPABASE_URL, SUPABASE_KEY, USER_ID'
             page.update()
             return
-        sync_status.value = 'Синхронизация...' 
+
+        sync_status.value = 'Синхронизация...'
         page.update()
-        remote = sync_client.pull_state(CONFIG.get('USER_ID', 'default'))
-        if remote:
+
+        remote = sync_client.pull_state()
+        if remote is not None:
             try:
                 remote_latest = max((g.get('last_modified') for g in remote if g.get('last_modified')), default=None)
                 local_latest = max((g.get('last_modified') for g in goals if g.get('last_modified')), default=None)
+
                 if remote_latest and (not local_latest or remote_latest > local_latest):
                     goals.clear()
                     goals.extend(remote)
-                    sync_status.value = 'Состояние загружено из облака'
+                    sync_status.value = 'Данные загружены из облака'
                 else:
-                    ok = sync_client.push_state(CONFIG.get('USER_ID', 'default'))
-                    sync_status.value = 'Загружено в облако' if ok else 'Не удалось загрузить в облако'
+                    ok = sync_client.push_state()
+                    sync_status.value = 'Данные отправлены в облако' if ok else 'Ошибка отправки'
             except Exception as ex:
                 sync_status.value = f'Ошибка слияния: {ex}'
         else:
-            ok = sync_client.push_state(CONFIG.get('USER_ID', 'default'))
-            sync_status.value = 'Загружено в облако' if ok else 'Не удалось загрузить в облако'
+            ok = sync_client.push_state()
+            sync_status.value = 'Данные отправлены в облако' if ok else 'Ошибка отправки'
+
         save_state()
         recalc_all_progress()
         page.update()
