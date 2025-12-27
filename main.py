@@ -941,4 +941,6 @@ def main(page: ft.Page):
     recalc_all_progress()
 
 
-ft.app(target=main)
+if __name__ == "__main__":
+    import os
+    ft.app(target=main, port=int(os.getenv("PORT", 8000)), view=ft.WEB_BROWSER)
