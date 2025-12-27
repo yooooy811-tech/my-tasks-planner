@@ -11,6 +11,7 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 20
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.scroll = ft.ScrollMode.AUTO
 
     goals = []
 
@@ -205,7 +206,13 @@ def main(page: ft.Page):
                 if weight_input is not None:
                     try:
                         w = float(weight_input.value)
-                        goal["weight"] = max(0.01, min(1.0, w))
+                        # adjust and cap to keep siblings sum <= 1
+                        assigned = adjust_weight_on_set(goal, w)
+                        if assigned is None:
+                            # fallback
+                            goal["weight"] = max(0.01, min(1.0, w))
+                        else:
+                            goal["weight"] = assigned
                     except:
                         goal["weight"] = goal.get("weight", 1.0)
                 # update deadline
@@ -213,7 +220,8 @@ def main(page: ft.Page):
                 # normalize weights among siblings if this is a subgoal
                 parent = find_parent(goal)
                 if parent and parent.get("subgoals"):
-                    normalize_weights(parent.get("subgoals", []))
+                        # if parent uses automatic equal weights, redistribute
+                        normalize_weights_in_parent(parent)
                 render_view()
                 recalc_all_progress()
                 try:
@@ -422,21 +430,42 @@ def main(page: ft.Page):
         page.update()
 
     def normalize_weights(subs):
+        # Legacy compatibility: keep equal distribution behavior if no parent provided
         if not subs:
             return
+        # If parent is provided and has manual_weights flag, do nothing here
         total = 0.0
         for s in subs:
-            w = max(0.01, float(s.get("weight", 1.0)))
+            w = float(s.get("weight", 1.0))
             total += w
-        if total == 0:
-            # distribute equally
+        # If total is <= 0, distribute equally
+        if total <= 0:
             n = len(subs)
             for s in subs:
                 s["weight"] = 1.0 / n
             return
+        # normalize existing weights to sum to 1.0
         for s in subs:
-            w = max(0.01, float(s.get("weight", 1.0)))
+            w = float(s.get("weight", 1.0))
             s["weight"] = w / total
+
+    def normalize_weights_in_parent(parent):
+        """Normalize weights among parent's subgoals equally if parent.manual_weights is False.
+        If manual_weights is True, do not change existing weights.
+        """
+        subs = parent.get("subgoals", [])
+        if not subs:
+            return
+        if parent.get("manual_weights", False):
+            # do not redistribute automatically
+            return
+        # distribute equally
+        n = len(subs)
+        if n == 0:
+            return
+        equal = 1.0 / n
+        for s in subs:
+            s["weight"] = equal
 
     def find_parent(target, nodes=None):
         if nodes is None:
@@ -449,6 +478,24 @@ def main(page: ft.Page):
             if parent:
                 return parent
         return None
+
+    def adjust_weight_on_set(goal, new_weight):
+        """Set goal weight capped so siblings sum <= 1. Marks parent.manual_weights = True."""
+        parent = find_parent(goal)
+        if parent is None:
+            # top-level goal: ignore weight
+            return None
+        subs = parent.get("subgoals", [])
+        total_other = 0.0
+        for s in subs:
+            if s is goal:
+                continue
+            total_other += float(s.get("weight", 0.0))
+        allowed = max(0.0, 1.0 - total_other)
+        assigned = min(max(0.0, float(new_weight)), allowed)
+        goal["weight"] = assigned
+        parent["manual_weights"] = True
+        return assigned
 
     new_goal_input = ft.TextField(
         hint_text="Введите название большой цели...",
@@ -546,22 +593,7 @@ def main(page: ft.Page):
         print("DEBUG: subgoal dialog opened")
         page.update()
 
-        # Inline fallback: also render a temporary inline panel in case dialog actions aren't delivered
-        inline_panel = ft.Container(
-            content=ft.Column([
-                ft.Text(f"Добавить подцель: {text}"),
-                ft.Row([sub_deadline_input, deadline_btn], spacing=12),
-                ft.Row([add_btn, cancel_btn], spacing=12),
-            ], spacing=8),
-            padding=12,
-            border_radius=8,
-            bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.BLUE_GREY_800),
-        )
-
-        # Append inline panel and provide handlers to remove it on cancel/add
-        content_column.controls.append(inline_panel)
-        page.update()
-
+        # Inline fallback: add separate buttons to avoid duplicate invocation
         def _remove_inline_panel():
             try:
                 content_column.controls.remove(inline_panel)
@@ -569,31 +601,42 @@ def main(page: ft.Page):
                 pass
             page.update()
 
-        # wrap existing handlers to also remove inline panel
-        old_add = add_btn.on_click
+        inline_add_btn = ft.ElevatedButton("Добавить")
+        inline_cancel_btn = ft.TextButton("Отмена")
 
-        def _inline_add_wrap(ev):
+        def _inline_add(ev):
             print("DEBUG: inline add clicked")
             _remove_inline_panel()
-            # call original
             try:
-                old_add(ev)
+                add_subgoal_to_goal(dialog, text, selected_subgoal_deadline)
             except Exception as ex:
-                print("DEBUG: error in old_add:", ex)
+                print("DEBUG: error in inline add_subgoal:", ex)
 
-        add_btn.on_click = _inline_add_wrap
-
-        old_cancel = cancel_btn.on_click
-
-        def _inline_cancel_wrap(ev):
+        def _inline_cancel(ev):
             print("DEBUG: inline cancel clicked")
             _remove_inline_panel()
             try:
-                old_cancel(ev)
+                setattr(dialog, "open", False)
+                page.update()
             except Exception as ex:
-                print("DEBUG: error in old_cancel:", ex)
+                print("DEBUG: error in inline cancel:", ex)
 
-        cancel_btn.on_click = _inline_cancel_wrap
+        inline_add_btn.on_click = _inline_add
+        inline_cancel_btn.on_click = _inline_cancel
+
+        inline_panel = ft.Container(
+            content=ft.Column([
+                ft.Text(f"Добавить подцель: {text}"),
+                ft.Row([sub_deadline_input, deadline_btn], spacing=12),
+                ft.Row([inline_add_btn, inline_cancel_btn], spacing=12),
+            ], spacing=8),
+            padding=12,
+            border_radius=8,
+            bgcolor=ft.Colors.with_opacity(0.06, ft.Colors.BLUE_GREY_800),
+        )
+
+        content_column.controls.append(inline_panel)
+        page.update()
 
     def add_subgoal_to_goal(dialog, text, selected_subgoal_deadline):
         try:
@@ -601,16 +644,30 @@ def main(page: ft.Page):
         except Exception:
             print("DEBUG: add_subgoal_to_goal: current_goal is None")
 
-        current_goal.setdefault("subgoals", []).append(
-            {
+        parent = current_goal
+        subs = parent.setdefault("subgoals", [])
+        # decide initial weight
+        if parent.get("manual_weights", False):
+            # give remaining weight to new subgoal (could be 0)
+            remaining = max(0.0, 1.0 - sum(float(s.get("weight", 0.0)) for s in subs))
+            w = remaining
+            subs.append({
                 "name": text,
                 "completed": False,
                 "deadline": selected_subgoal_deadline,
                 "subgoals": [],
-                "weight": 1.0,
-            }
-        )
-        normalize_weights(current_goal["subgoals"])
+                "weight": w,
+            })
+        else:
+            # automatic equal redistribution among all subgoals
+            subs.append({
+                "name": text,
+                "completed": False,
+                "deadline": selected_subgoal_deadline,
+                "subgoals": [],
+                "weight": 0.0,
+            })
+            normalize_weights_in_parent(parent)
         # close dialog if provided (None when using inline fallback)
         try:
             if dialog:
