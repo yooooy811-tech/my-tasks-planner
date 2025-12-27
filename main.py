@@ -941,7 +941,7 @@ def main(page: ft.Page):
     recalc_all_progress()
 
 
-if name == "main":
+if __name__ == "__main__":
     ft.app(
         target=main,
         view=ft.WEB_BROWSER,
